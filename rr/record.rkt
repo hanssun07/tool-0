@@ -20,6 +20,10 @@
 (require
     threading
     racket/match
+    (for-syntax
+        racket/base
+        threading
+        syntax/parse)
     "printer-utils.rkt")
 
 (define (univ-ref x . is)
@@ -43,7 +47,38 @@
         [(define write-proc record-print)])
 
 ;; TODO: syntax validation, maybe as a macro
-(define (#%record . vs) (record (apply hasheq vs)))
+(define (#%make-record . vs) (record (apply hasheq vs)))
+
+(begin-for-syntax
+    (define (keysym->key k)
+        (~> k symbol->string string->list cdr list->string string->symbol))
+    (define ((over-syntax f) s [lex s])
+        (~> s syntax->datum f (datum->syntax lex _)))
+    (define-syntax-rule
+        (syntax-cases a ...)
+        (lambda (stx) (syntax-case stx a ...)))
+    (define record-match-expander (syntax-cases (#%key)
+        [(root)
+            #'(? record?)]
+        [(root (#%key k))
+         (with-syntax ([id ((over-syntax keysym->key) #'k #'root)])
+                 #'(record (hash* [(make-key 'k) id])))]
+        [(root (#%key k) (#%key j) r ...)
+         (with-syntax ([id ((over-syntax keysym->key) #'k #'root)]
+                       [rest (record-match-expander #'(root (#%key j) r ...))])
+            #'(and (record (hash* [(make-key 'k) id]))
+                   rest))]
+        [(root (#%key k) v r ...)
+         (with-syntax ([rest (record-match-expander #'(root r ...))])
+            #'(and (record (hash* [(make-key 'k) v]))
+                   rest))]))
+)
+
+(define-match-expander #%record
+    record-match-expander
+    (syntax-rules ()
+        [(_ v ...) (#%make-record v ...)]))
+
 #|  wishlist
 
     (define e 7)
@@ -54,12 +89,6 @@
            :e _ })                     ;; default value-ref
     (equal? k
         :{ :a 1  :b 3  :c 6  :d 5  :e 7 }
-
-    (match-define :{ :a _  :b asdf } k)
-    => (define a 1) (define asdf 3)
-    using (define-match-expander) with the reader?
-    struct for records, with different constructor,
-    then prop:match-expander?
 |#
 
 
