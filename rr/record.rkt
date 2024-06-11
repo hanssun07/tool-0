@@ -13,18 +13,21 @@
         ~>
         #%record #%key)
     (require racket/base))
-
 (module+ reader
-    (provide read-:))
+    ; side effect of visit:
+    ; (current-readtable (make-readtable-with-record))
+)
 
 (require
     threading
     racket/match
+    racket/hash
+    "printer-utils.rkt"
     (for-syntax
-        racket/base
         threading
-        syntax/parse)
-    "printer-utils.rkt")
+        racket/base
+        racket/match
+        syntax/parse))
 
 (define (univ-ref x . is)
     (if (null? is) x
@@ -46,8 +49,15 @@
     #:methods gen:custom-write
         [(define write-proc record-print)])
 
-;; TODO: syntax validation, maybe as a macro
-(define (#%make-record . vs) (record (apply hasheq vs)))
+(define empty-record (record (hasheq)))
+(define (make-record . vs) (record (apply hasheq vs)))
+(define (record-merge-< . rs)
+    (cond [(null? rs)        empty-record]
+          #;[(~> rs cdr null?) (car rs)]
+          [#t (~> rs
+                  (map record-value _)
+                  (apply hash-union _ #:combine (lambda (_ y) y))
+                  record)]))
 
 (begin-for-syntax
     (define (keysym->key k)
@@ -58,8 +68,7 @@
         (syntax-cases a ...)
         (lambda (stx) (syntax-case stx a ...)))
     (define record-match-expander (syntax-cases (#%key)
-        [(root)
-            #'(? record?)]
+        [(root) #'(? record?)]
         [(root (#%key k))
          (with-syntax ([id ((over-syntax keysym->key) #'k #'root)])
                  #'(record (hash* [(make-key 'k) id])))]
@@ -72,24 +81,43 @@
          (with-syntax ([rest (record-match-expander #'(root r ...))])
             #'(and (record (hash* [(make-key 'k) v]))
                    rest))]))
-)
+    (define (record-literal-expander stx)
+        (define lex (syntax-cases (#%key)
+            [(root) '()]
+            #;[(root (#%key k))
+             `((implicit ,#'k)  )]
+            [(root (#%key k) (#%key j) r ...)
+             `((implicit ,#'k)  ,@(lex #'(root (#%key j) r ...)))]
+            [(root (#%key k) v r ...)
+             (~> #'v syntax->datum (eq? '...) not)
+             `((pair ,#'(make-key 'k) ,#'v) ,@(lex #'(root r ...)))]
+            [(root (#%key k) r ...)
+             `((implicit ,#'k)  ,@(lex #'(root r ...)))]
+            [(root ooo v r ...)
+             (~> #'ooo syntax->datum (eq? '...))
+             `((inline ,#'v)    ,@(lex #'(root r ...)))]))
+        (define (sanitize tok) (match tok
+            [`(implicit ,k) `(pair ,#`(make-key '#,k) ,((over-syntax keysym->key) k stx))]
+            [v v]))
+        (define (gather x y) (match (list x y)
+            [`((pair ,k ,v) ((pair ,p ...) ,@r))
+             `((pair ,k ,v ,@p) ,@r)]
+            [`(,v ,r)
+             `(,v ,@r)]))
+        (define (transform-group g) (match g
+            [`(pair ,s ...) (cons #'make-record s)]
+            [`(inline ,v)   v]))
+        (~> stx
+            lex
+            (map sanitize _)
+            (foldr gather '() _)
+            (map transform-group _)
+            (cons #'record-merge-< _)
+            (datum->syntax stx _))))
 
 (define-match-expander #%record
     record-match-expander
-    (syntax-rules ()
-        [(_ v ...) (#%make-record v ...)]))
-
-#|  wishlist
-
-    (define e 7)
-    (define k
-        :{ :a 1  :b 2
-           ... :{ :b 3  :c 4  :d 5 }   ;; merging
-           :c 6
-           :e _ })                     ;; default value-ref
-    (equal? k
-        :{ :a 1  :b 3  :c 6  :d 5  :e 7 }
-|#
+    record-literal-expander)
 
 
 (define/printer (key-print key recur)
@@ -131,4 +159,15 @@
             [#\}                (read-char in)
                                 '()]
             [_                  (cons (read-syntax/recursive src in) (read-:map src in))]))
+
+    (define dispatch-: (case-lambda
+        [(ch in)
+         (read-: (object-name in) in)]
+        [(ch in src line col pos)
+         (read-: src in)]))
+    (define (make-readtable-with-record [from-readtable (current-readtable)])
+        (make-readtable from-readtable
+                        #\: 'terminating-macro
+                        dispatch-:))
+    (current-readtable (make-readtable-with-record))
 )

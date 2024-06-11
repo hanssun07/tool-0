@@ -6,7 +6,7 @@ x
 (:a x)
 (x :a)
 
-(:{ :a :{ :b :{ :c :d } } } :a :b :c)
+(:{ :a :{ :b :{ :c ':d } } } :a :b :c)
 
 (require racket/match)
 (match :{ :a 1 :b 2 :c 3 }
@@ -29,6 +29,18 @@ x
 
 (match-define :{ :a :b :c } :{ :a 1 :b 2 :c '(1 2) :d 3 })
 (list a b c)
+
+:{ :a :b :c }
+:{ ... :{ :a 1 :b 2 :c 3 } }
+:{ ... x }
+:{ :x ... x }
+
+(define e 7)
+:{ :a 1  :b 2
+   ... :{ :b 3  :c 4  :d 5 }
+   :c 6
+   :e }
+:{ :a 1  :b 3  :c 6  :d 5  :e 7 }
 
 #;(begin 
     (require racket/pretty (for-template rr/record))
